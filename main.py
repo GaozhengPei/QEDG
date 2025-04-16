@@ -4,11 +4,8 @@ import shutil
 import time
 import torch
 import torch.optim as optim
-import torch.nn.functional as F
-from torchvision import transforms
-from kornia import augmentation
-from nets import Generator_2, GeneratorB
-from utils import ImagePool, reset_model, get_dataset, setup_seed, get_target_model, get_substitute_model, test_acc, write, test_robust, diversity_loss, data_aug,new_loss,test_cohen_kappa
+from nets import Generator_2
+from utils import ImagePool, reset_model, get_dataset, setup_seed, get_target_model, get_substitute_model, test_acc, write, test_robust, diversity_loss, data_aug,test_cohen_kappa,over_confidence_loss
 
 
 class Synthesizer():
@@ -24,29 +21,11 @@ class Synthesizer():
         self.batch_size = batch_size
         self.data_pool = ImagePool(images_dir, dataset)
         self.generator = generator.cuda().train()
-        # self.transform = transforms.Compose([# augmentation.ColorJitter(0.2,0.2,0.2),augmentation.RandomChannelShuffle(p=0.5), 
-        #                 augmentation.RandomGaussianNoise(),
-        #                 # augmentation.RandomSolarize(p=0.3),
-        #                 augmentation.RandomErasing(),
-        #                 augmentation.RandomAffine(padding_mode='border',degrees=45),
-        #                 augmentation.RandomHorizontalFlip(),
-        #                 augmentation.RandomVerticalFlip(),
-        #                 augmentation.RandomPerspective(),
-        #                 # augmentation.RandomInvert(p=0.2),
-        #                 augmentation.RandomCrop(size=(self.img_size[-2],self.img_size[-1]),padding=4)])
-        # self.aug =transforms.Compose(
-        #     [
-                # transforms.ColorJitter(brightness=0.5),
-                # transforms.ColorJitter(hue=0.3),
-                # transforms.RandomCrop(size=(32,32),padding=4),
-        #         transforms.RandomHorizontalFlip(),
-        #         transforms.RandomVerticalFlip(),
-        #         transforms.RandomRotation(90,expand=True) # if torch.rand(1) < 0.3 else transforms.RandomRotation(0)
-        #     ])
         self.aug,self.transform = data_aug(args.dataset)
 
     def get_data(self):
-        datasets = self.data_pool.get_dataset()  # 获取程序运行到现在所有的图片
+        ### Retrieve all data
+        datasets = self.data_pool.get_dataset()  
         global query
         query = len(datasets)
         print('The number of query is {}'.format(len(datasets)))
@@ -57,27 +36,33 @@ class Synthesizer():
             num_workers=4, drop_last=True)
         return self.data_loader
 
-    def gen_data(self):
+    def gen_data(self,sub_net):
         sub_net.eval()
         min_loss = 1e6
         best_inputs = None
         z = torch.randn(size=(self.batch_size, self.nz)).cuda()  #
         z.requires_grad = True
         targets = torch.randint(low=0, high=self.num_classes, size=(self.batch_size,)).cuda()
+        # print(targets)
         reset_model(self.generator)
-        gen_optimizer = torch.optim.Adam(self.generator.parameters(), 0.001, betas=(0.5, 0.999))
+        gen_optimizer = torch.optim.Adam(self.generator.parameters(), 0.001)
         for it in range(args.g_steps):
             gen_optimizer.zero_grad()
             inputs = self.generator(z)
             inputs = self.aug(inputs)
             s_out = sub_net(inputs)
             s_prob = torch.softmax(s_out, dim=1)
-            over_confidence_loss = torch.std(s_prob, dim=1).sum() / self.batch_size
-            class_loss = torch.nn.CrossEntropyLoss()(s_out, targets)  # ce_loss
+            # print('Generate Acc ',torch.sum(torch.argmax(s_prob,dim=1)==targets)/self.batch_size)
+            # print("top-1 prob",torch.max(s_prob,dim=1)[0])
+            ###  over_confidence_loss
+            oc_loss = over_confidence_loss(s_prob)
+            ### classification loss
+            class_loss = torch.nn.CrossEntropyLoss()(s_out, targets)  
+            ### diversity loss
             div_loss = diversity_loss(inputs,targets)
-            loss = class_loss + over_confidence_loss + 0.01 * div_loss
-            # print(class_loss, over_confidence_loss)
-            # print((torch.argmax(s_out, dim=1) == targets).sum())
+            loss = class_loss + args.over_confidence_scale * oc_loss + args.div_scale * div_loss
+            # print(class_loss,oc_loss,div_loss)
+            # print(s_prob)
             if min_loss > loss.item():
                 min_loss = loss.item()
                 best_inputs = inputs.data
@@ -94,22 +79,26 @@ def args_parser():
                         help='The learning rate of the substitute model')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help='SGD momentum (default: 0.9)')
-    parser.add_argument('--dataset', type=str, default='mnist', help="name \
+    parser.add_argument('--dataset', type=str, default='cifar10', help="name \
                         of dataset")
     parser.add_argument('--black_net', default='resnet34', type=str)
     parser.add_argument('--sub_net', default='resnet18', type=str)
-    parser.add_argument('--lr_g', default=1e-2, type=float,
+    parser.add_argument('--lr_g', default=1e-3, type=float,
                         help='initial learning rate for generation')
     parser.add_argument('--g_steps', default=100, type=int, metavar='N',
                         help='number of iterations for generation')
-    parser.add_argument('--batch_size', default=256, type=int, metavar='N',
+    parser.add_argument('--batch_size', default=512, type=int, metavar='N',
                         help='number of total iterations in each epoch')
-    parser.add_argument('--nz', default=512, type=int, metavar='N',
+    parser.add_argument('--nz', default=1024, type=int, metavar='N',
                         help='number of total iterations in each epoch')
     parser.add_argument('--seed', default=2021, type=int,
                         help='seed for initializing training.')
-    parser.add_argument('--query', default=5000, type=int,
+    parser.add_argument('--query', default=30000, type=int,
                         help='The number of query')
+    parser.add_argument('--over_confidence_scale', default=1, type=float,
+                        help='The coefficient of over_confidence_loss')    
+    parser.add_argument('--div_scale', default=0.01, type=float,
+                        help='The coefficient of div_loss')   
     parser.add_argument('--sub_model_weight_path', default='./sub_model_weight', type=str,
                         help='The path of the substitute model weight')
     parser.add_argument('--select_threshold', default=0.7, type=float,
@@ -128,13 +117,10 @@ def sub_train(synthesizer, optimizer):
             optimizer.zero_grad()
             images, labels = images.cuda(), labels.cuda()
             substitute_outputs = sub_net(images)
-            # loss_ce = new_loss(substitute_outputs, labels)
-            loss_ce = F.cross_entropy(substitute_outputs, labels)
-            # loss_l1 = torch.nn.L1Loss()(images,labels)
-            if  loss_ce > 0:
-                loss = loss_ce
-                loss.backward()
-                optimizer.step()
+            loss_ce = torch.nn.CrossEntropyLoss()(substitute_outputs, labels)
+            loss = loss_ce
+            loss.backward()
+            optimizer.step()
 
 
 if __name__ == '__main__':
@@ -191,21 +177,26 @@ if __name__ == '__main__':
     # &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
     optimizer = optim.SGD(sub_net.parameters(), args.lr, args.momentum)
     sub_net.train()
-    best_con = 0
+    best_con = 0.0
     query = 0
     Query = args.query
+    ### Determine whether the number of queries exceeds the limit.
     while query < Query:
-        synthesizer.gen_data()  # g_steps
+        ### Use a generator to synthesize data
+        synthesizer.gen_data(sub_net)  # g_steps
+        ### Train substitute_model
         sub_train(synthesizer, optimizer)
+        ### Test performence
         acc, _ = test_acc(sub_net, test_loader)
         con = test_cohen_kappa(sub_net, blackBox_net, test_loader)
         asr = test_robust(sub_net, blackBox_net, test_loader)
-
+        ### Save the checkpoint of the substitute_model
         if con > best_con:
             best_con = con
             torch.save(sub_net.state_dict(),
                        args.sub_model_weight_path + '/{}_{}_{}.pth'.format(args.sub_net,args.black_net, args.dataset))
         write(acc, con,best_con, asr, args.dataset)
+    ### After the query limit is reached, continue training for a certain number of epochs using the data stored in the data pool.
     for epoch in range(args.epochs):
         with open('./{}.txt'.format(args.dataset), 'a') as f:
             f.write("epoch:{}/{} \n".format(epoch, args.epochs))

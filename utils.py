@@ -219,7 +219,7 @@ def save_image_batch(imgs, root, _idx, transform, blackBox_net, student, dataset
             img = (transform(img).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')[0]
             # img = (transform(img)[0].permute(1,2,0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
         else:
-            img = (transform(img)[0].permute(1, 2, 0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
+            img = (transform(img).permute(1, 2, 0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
         img_path = os.path.join(root, dataset, 'images')
         if not os.path.exists(img_path):
             os.makedirs(img_path)
@@ -277,38 +277,29 @@ class ImagePool(object):
 
 
 def hard_label_to_one_hot(hard_label):
-    # 获取输入维度
     input_dim = len(hard_label)
 
-    # 创建一个全0的张量，大小为(input_dim, 10)
     one_hot = torch.zeros((input_dim, 10)).cuda()
 
-    # 使用scatter_函数将指定位置填充为1
     one_hot.scatter_(1, hard_label.unsqueeze(1), 1)
 
     return one_hot
 
 
 def cosine_similarity(matrix):
-    # 计算向量的内积
     dot_product = torch.matmul(matrix, matrix.t())
 
-    # 计算向量的范数
     norm = torch.norm(matrix, dim=1, keepdim=True)
 
-    # 计算余弦相似度
     similarity = dot_product / torch.matmul(norm, norm.t())
 
     return similarity
 
 
-# 计算类内相似度的和
 def sum_intra_similarity(matrix):
     similarity_matrix = cosine_similarity(matrix)
-    # 选择除了对角线以上的元素
     mask = torch.triu(torch.ones(similarity_matrix.shape), diagonal=1).cuda()
 
-    # 将对角线以上的元素置为0，然后计算总和
     intra_similarity_sum = torch.sum(similarity_matrix * mask)
 
     return intra_similarity_sum
@@ -322,44 +313,27 @@ def diversity_loss(inputs, targets):
         similarity += sum_intra_similarity(temp_inputs)
     return similarity / inputs.shape[0]
 
+def over_confidence_loss(s_prob):
+    batch_size = s_prob.shape[0]
+    return torch.std(s_prob, dim=1).sum() / batch_size
 
 def data_aug(dataset):
-    if dataset == 'fmnist':
-        aug = transforms.Compose([
-            augmentation.RandomHorizontalFlip(),
-            augmentation.RandomVerticalFlip(),
-            augmentation.RandomPerspective(p=0.5),
-            augmentation.RandomSolarize(p=0.3),
-            augmentation.RandomInvert(p=0.2),
-            # augmentation.RandomGaussianNoise(p=0.2),
-            # augmentation.RandomErasing(p=0.2),
-            augmentation.RandomRotation(90, p=0.5),
-            # augmentation.RandomCrop(size=(28,28),padding=4)
-        ])
+    if dataset == "fmnist":
         transform = transforms.Compose([
-            # transforms.RandomCrop(size=(28, 28), padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
-            transforms.RandomRotation(90), # if torch.rand(1) < 0.3 else transforms.RandomRotation(0),
-            # transforms.RandomCrop(size=(32, 32), padding=4)
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation([90,180]),
+            transforms.RandomCrop(size=(28, 28), padding=4),
         ])
-        return aug, transform
-    if dataset == 'mnist':
-        aug = transforms.Compose([
-            augmentation.RandomHorizontalFlip(p=0.5),
-            augmentation.RandomVerticalFlip(p=0.5),
-            augmentation.RandomRotation(90, p=0.5),
-            augmentation.RandomPerspective(p=0.5),
-            # augmentation.RandomGaussianNoise(p=0.2),
-            # augmentation.RandomErasing(p=0.1),
-            augmentation.RandomCrop(size=(28, 28), padding=4),
-        ])
+        return transform,transform
+    if dataset == "mnist":
         transform = transforms.Compose([
-            # transforms.RandomHorizontalFlip(p=0.001)
-            transforms.RandomHorizontalFlip(p=0.3),
-            transforms.RandomVerticalFlip(p=0.3),
-            transforms.RandomRotation(90)
+            transforms.RandomCrop(size=(28, 28), padding=4),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation([90,180]),
         ])
+        return transform,transform
     if dataset == 'svhn':
         transform = transforms.Compose(
             [augmentation.ColorJitter(0.2, 0.2, 0.2), augmentation.RandomChannelShuffle(p=0.5),
@@ -382,7 +356,7 @@ def data_aug(dataset):
                 transforms.RandomVerticalFlip(p=0.3),
                 transforms.RandomRotation(90, expand=True) if torch.rand(1) < 0.3 else transforms.RandomRotation(0)
             ])
-
+        return aug, transform
     if dataset == 'cifar10':
         transform = transforms.Compose(
             [augmentation.ColorJitter(0.2, 0.2, 0.2), augmentation.RandomChannelShuffle(p=0.5),
@@ -405,150 +379,7 @@ def data_aug(dataset):
                 transforms.RandomVerticalFlip(p=0.3),
                 transforms.RandomRotation(90, expand=True) if torch.rand(1) < 0.3 else transforms.RandomRotation(0),
             ])
-    return aug, transform
-
-
-def new_loss(s_out, label):
-    idx = torch.argmax(s_out, dim=1) != label
-    if idx.sum() > 0:
-        s_out = s_out[idx]
-        label = label[idx]
-        loss = nn.CrossEntropyLoss()(s_out, label)
-        return loss
-    else:
-        return 0
-
-
-# CIFAR-100的超类标签
-superclass_labels = [
-    'aquatic mammals', 'fish', 'flowers', 'food containers', 'fruit and vegetables',
-    'household electrical devices', 'household furniture', 'insects', 'large carnivores',
-    'large man-made outdoor things', 'large natural outdoor scenes', 'large omnivores and herbivores',
-    'medium-sized mammals', 'non-insect invertebrates', 'people', 'reptiles', 'small mammals',
-    'trees', 'vehicles 1', 'vehicles 2'
-]
-
-# 细类标签到超类标签的映射表
-fine_to_superclass_mapping = {
-    'apple': 'fruit and vegetables',
-    'aquarium_fish': 'fish',
-    'baby': 'people',
-    'bear': 'large carnivores',
-    'bed': 'household furniture',
-    'bee': 'insects',
-    'beetle': 'insects',
-    'bicycle': 'vehicles 1',
-    'bottle': 'food containers',
-    'bowl': 'food containers',
-    'boy': 'people',
-    'bridge': 'large man-made outdoor things',
-    'bus': 'vehicles 1',
-    'butterfly': 'insects',
-    'camel': 'large omnivores and herbivores',
-    'can': 'food containers',
-    'castle': 'large man-made outdoor things',
-    'caterpillar': 'insects',
-    'cattle': 'large omnivores and herbivores',
-    'chair': 'household furniture',
-    'chimpanzee': 'medium-sized mammals',
-    'clock': 'household electrical devices',
-    'cloud': 'large natural outdoor scenes',
-    'cockroach': 'insects',
-    'couch': 'household furniture',
-    'crab': 'non-insect invertebrates',
-    'crocodile': 'reptiles',
-    'cup': 'food containers',
-    'dinosaur': 'reptiles',
-    'dolphin': 'aquatic mammals',
-    'elephant': 'large omnivores and herbivores',
-    'flatfish': 'fish',
-    'forest': 'large natural outdoor scenes',
-    'fox': 'medium-sized mammals',
-    'girl': 'people',
-    'hamster': 'small mammals',
-    'house': 'large man-made outdoor things',
-    'kangaroo': 'large omnivores and herbivores',
-    'keyboard': 'household electrical devices',
-    'lamp': 'household electrical devices',
-    'lawn_mower': 'household electrical devices',
-    'leopard': 'large carnivores',
-    'lion': 'large carnivores',
-    'lizard': 'reptiles',
-    'lobster': 'non-insect invertebrates',
-    'man': 'people',
-    'maple_tree': 'trees',
-    'motorcycle': 'vehicles 1',
-    'mountain': 'large natural outdoor scenes',
-    'mouse': 'small mammals',
-    'mushroom': 'fruit and vegetables',
-    'oak_tree': 'trees',
-    'orange': 'fruit and vegetables',
-    'orchid': 'flowers',
-    'otter': 'aquatic mammals',
-    'palm_tree': 'trees',
-    'pear': 'fruit and vegetables',
-    'pickup_truck': 'vehicles 1',
-    'pine_tree': 'trees',
-    'plain': 'large natural outdoor scenes',
-    'plate': 'food containers',
-    'poppy': 'flowers',
-    'porcupine': 'small mammals',
-    'possum': 'small mammals',
-    'rabbit': 'small mammals',
-    'raccoon': 'medium-sized mammals',
-    'ray': 'fish',
-    'road': 'large man-made outdoor things',
-    'rocket': 'vehicles 2',
-    'rose': 'flowers',
-    'sea': 'large natural outdoor scenes',
-    'seal': 'aquatic mammals',
-    'shark': 'fish',
-    'shrew': 'small mammals',
-    'skunk': 'medium-sized mammals',
-    'skyscraper': 'large man-made outdoor things',
-    'snail': 'non-insect invertebrates',
-    'snake': 'reptiles',
-    'spider': 'non-insect invertebrates',
-    'squirrel': 'small mammals',
-    'streetcar': 'vehicles 1',
-    'sunflower': 'flowers',
-    'sweet_pepper': 'fruit and vegetables',
-    'table': 'household furniture',
-    'tank': 'vehicles 2',
-    'telephone': 'household electrical devices',
-    'television': 'household electrical devices',
-    'tiger': 'large carnivores',
-    'tractor': 'vehicles 2',
-    'train': 'vehicles 1',
-    'trout': 'fish',
-    'tulip': 'flowers',
-    'turtle': 'reptiles',
-    'wardrobe': 'household furniture',
-    'whale': 'aquatic mammals',
-    'willow_tree': 'trees',
-    'wolf': 'large carnivores',
-    'woman': 'people',
-    'worm': 'non-insect invertebrates'
-}
-
-fine_classes = ['apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle', 'bicycle', 'bottle', 'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel', 'can', 'castle', 
-                'caterpillar', 'cattle', 'chair', 'chimpanzee', 'clock', 'cloud', 'cockroach', 'couch', 'crab', 'crocodile', 'cup', 'dinosaur', 'dolphin', 'elephant', 'flatfish', 'forest', 
-                'fox', 'girl', 'hamster', 'house', 'kangaroo', 'keyboard', 'lamp', 'lawn_mower', 'leopard', 'lion', 'lizard', 'lobster', 'man', 'maple_tree', 'motorcycle', 'mountain', 'mouse', 
-                'mushroom', 'oak_tree', 'orange', 'orchid', 'otter', 'palm_tree', 'pear', 'pickup_truck', 'pine_tree', 'plain', 'plate', 'poppy', 'porcupine', 'possum', 'rabbit', 'raccoon', 'ray',
-                  'road', 'rocket', 'rose', 'sea', 'seal', 'shark', 'shrew', 'skunk', 'skyscraper', 'snail', 'snake', 'spider', 'squirrel', 'streetcar', 'sunflower', 'sweet_pepper', 'table', 'tank', 
-                  'telephone', 'television', 'tiger', 'tractor', 'train', 'trout', 'tulip', 'turtle', 'wardrobe', 'whale', 'willow_tree', 'wolf', 'woman', 'worm']
+        return aug, transform
 
 
 
-def convert_fine_coarse(labels):
-    # classes_names = fine_classes[labels.numpy()]
-    # coarse_names = fine_to_superclass_mapping[classes_names]
-    # return superclass_labels.index(coarse_names)
-    coarse_names = []
-    for i in range(len(labels)):
-        class_name = fine_classes[i]
-        coarse_name = fine_to_superclass_mapping[class_name]
-        coarse_index = superclass_labels.index(coarse_name)
-        coarse_names.append(coarse_index)
-        # print(class_name,coarse_name)
-    return torch.from_numpy(np.array(coarse_names))
