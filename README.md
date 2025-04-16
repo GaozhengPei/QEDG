@@ -1,4 +1,5 @@
 # This repository contains the code release for **Exploring Query Efficient Data Generation towards Data-free Model Stealing in Hard Label Setting**
+![Loss](./image/var&similarity.png)
 # How to run
 ## Obtain a target model 
 Train the substitute model first. We take the MNIST dataset as an example.The weight of the target model will be saved in ```./target_model_weight```
