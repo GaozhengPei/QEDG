@@ -219,7 +219,7 @@ def save_image_batch(imgs, root, _idx, transform, blackBox_net, student, dataset
             img = (transform(img).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')[0]
             # img = (transform(img)[0].permute(1,2,0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
         else:
-            img = (transform(img).permute(1, 2, 0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
+            img = (transform(img)[0].permute(1, 2, 0).clamp(0, 1).detach().cpu().numpy() * 255).astype('uint8')
         img_path = os.path.join(root, dataset, 'images')
         if not os.path.exists(img_path):
             os.makedirs(img_path)
@@ -277,29 +277,38 @@ class ImagePool(object):
 
 
 def hard_label_to_one_hot(hard_label):
+    # 获取输入维度
     input_dim = len(hard_label)
 
+    # 创建一个全0的张量，大小为(input_dim, 10)
     one_hot = torch.zeros((input_dim, 10)).cuda()
 
+    # 使用scatter_函数将指定位置填充为1
     one_hot.scatter_(1, hard_label.unsqueeze(1), 1)
 
     return one_hot
 
 
 def cosine_similarity(matrix):
+    # 计算向量的内积
     dot_product = torch.matmul(matrix, matrix.t())
 
+    # 计算向量的范数
     norm = torch.norm(matrix, dim=1, keepdim=True)
 
+    # 计算余弦相似度
     similarity = dot_product / torch.matmul(norm, norm.t())
 
     return similarity
 
 
+# 计算类内相似度的和
 def sum_intra_similarity(matrix):
     similarity_matrix = cosine_similarity(matrix)
+    # 选择除了对角线以上的元素
     mask = torch.triu(torch.ones(similarity_matrix.shape), diagonal=1).cuda()
 
+    # 将对角线以上的元素置为0，然后计算总和
     intra_similarity_sum = torch.sum(similarity_matrix * mask)
 
     return intra_similarity_sum
@@ -382,4 +391,23 @@ def data_aug(dataset):
         return aug, transform
 
 
+
+
+def free_aug(data,substitute_outputs):
+    substitute_prob = torch.max(torch.softmax(substitute_outputs, dim=1),dim=1)[0]
+    # print(substitute_prob)
+    if random.random()<0.05:
+        random_num = random.randint(0,1)
+        if random_num==0:
+            data_ = transforms.RandomHorizontalFlip()(data)
+        elif random_num==1:
+            data_ = transforms.RandomVerticalFlip()(data)
+        data[substitute_prob>0.95] = data_[substitute_prob>0.95]
+    return data
+
+def Imbalance_CrossEntropyLoss(substitute_outputs, labels,balance_scale):
+    pred_labels = torch.max(substitute_outputs,dim=1)[1]
+    right_loss = torch.nn.CrossEntropyLoss(reduction="sum")(substitute_outputs[pred_labels==labels],labels[pred_labels==labels])
+    wrong_loss = torch.nn.CrossEntropyLoss(reduction="sum")(substitute_outputs[pred_labels!=labels],labels[pred_labels!=labels])
+    return (right_loss+ balance_scale * wrong_loss)/substitute_outputs.shape[0]
 

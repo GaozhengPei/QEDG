@@ -1,1 +1,1 @@
-python main.py --dataset fmnist --black_net resnet34 --sub_net resnet18 --batch_size 256 --nz 512 --query 5000 --over_confidence_scale 10 --div_scale 0.1 --select_threshold 0.7
+python main.py --dataset fmnist --black_net resnet34 --sub_net resnet18 --batch_size 256 --nz 512 --query 5000 --over_confidence_scale 10 --div_scale 0.1 --select_threshold 0.7 --balance_scale 3 --free_aug False

@@ -1,1 +1,1 @@
-python main.py --dataset cifar10 --black_net resnet34 --sub_net resnet18 --batch_size 512 --nz 1024 --query 30000 --over_confidence_scale 1 --div_scale 0.01 --select_threshold 0.7
+python main.py --dataset cifar10 --black_net resnet34 --sub_net resnet18 --batch_size 512 --nz 1024 --query 30000 --over_confidence_scale 1 --div_scale 0.01 --select_threshold 0.7 --balance_scale 2 --free_aug True
